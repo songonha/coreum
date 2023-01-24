@@ -49,9 +49,10 @@ type App struct {
 
 // New creates application instance with in-memory database and disabled logging.
 func New() *App {
-	db := tmdb.NewMemDB()
-	logger := log.NewNopLogger()
+	return NewWithConfig(log.NewNopLogger(), tmdb.NewMemDB())
+}
 
+func NewWithConfig(logger log.Logger, db tmdb.DB) *App {
 	network, err := config.NetworkByChainID(constant.ChainIDDev)
 	if err != nil {
 		panic(err)

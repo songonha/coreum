@@ -487,16 +487,19 @@ func TestAuthSignModeDirectAux(t *testing.T) {
 	txBuilder.SetFeeAmount(sdk.NewCoins(chain.NewCoin(chain.ChainSettings.GasPrice.Mul(sdk.NewDecFromInt(sdk.NewIntFromUint64(gas))).Ceil().RoundInt())))
 	txBuilder.SetGasLimit(gas)
 
-	requireT.NoError(clienttx.Sign(chain.TxFactory().
+	txf := chain.TxFactory().
 		WithAccountNumber(feePayerAccountInfo.GetAccountNumber()).
-		WithSequence(feePayerAccountInfo.GetSequence()),
+		WithSequence(feePayerAccountInfo.GetSequence())
+
+	requireT.NoError(clienttx.Sign(
+		txf,
 		feePayerKey.Name,
 		txBuilder,
 		false))
 	txBytes, err := chain.ClientContext.TxConfig().TxEncoder()(txBuilder.GetTx())
 	requireT.NoError(err)
 
-	_, err = client.BroadcastRawTx(ctx, chain.ClientContext, txBytes)
+	_, err = client.BroadcastRawTx(ctx, chain.ClientContext, txf, txBytes)
 	requireT.NoError(err)
 
 	bankClient := banktypes.NewQueryClient(chain.ClientContext)

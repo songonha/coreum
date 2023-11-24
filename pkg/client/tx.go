@@ -13,6 +13,7 @@ import (
 
 	sdkerrors "cosmossdk.io/errors"
 	"github.com/cometbft/cometbft/mempool"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	tmtypes "github.com/cometbft/cometbft/types"
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/client/grpc/tmservice"
@@ -99,7 +100,7 @@ func BroadcastTx(ctx context.Context, clientCtx Context, txf Factory, msgs ...sd
 		return nil, err
 	}
 
-	return BroadcastRawTx(ctx, clientCtx, txBytes)
+	return BroadcastRawTx(ctx, clientCtx, txf, txBytes)
 }
 
 // CalculateGas simulates the execution of a transaction and returns the
@@ -198,7 +199,12 @@ func CalculateGas(ctx context.Context, clientCtx Context, txf Factory, msgs ...s
 }
 
 // BroadcastRawTx broadcast the txBytes using the clientCtx and set BroadcastMode.
-func BroadcastRawTx(ctx context.Context, clientCtx Context, txBytes []byte) (*sdk.TxResponse, error) {
+func BroadcastRawTx(
+	ctx context.Context,
+	clientCtx Context,
+	txf tx.Factory,
+	txBytes []byte,
+) (*sdk.TxResponse, error) {
 	var (
 		txRes *sdk.TxResponse
 		err   error
@@ -218,7 +224,7 @@ func BroadcastRawTx(ctx context.Context, clientCtx Context, txBytes []byte) (*sd
 	}
 
 	if clientCtx.GetAwaitTx() {
-		txRes, err = AwaitTx(ctx, clientCtx, txRes.TxHash)
+		txRes, err = AwaitTx(ctx, clientCtx, txf, txRes.TxHash)
 		if err != nil {
 			return nil, err
 		}
@@ -254,6 +260,7 @@ func GetAccountInfo(
 func AwaitTx(
 	ctx context.Context,
 	clientCtx Context,
+	txf tx.Factory,
 	txHash string,
 ) (txResponse *sdk.TxResponse, err error) {
 	txSvcClient := sdktx.NewServiceClient(clientCtx)
@@ -280,6 +287,26 @@ func AwaitTx(
 		if txResponse.Height == 0 {
 			return retry.Retryable(errors.Errorf("transaction '%s' hasn't been included in a block yet", txHash))
 		}
+
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	timeoutCtx, cancel2 := context.WithTimeout(ctx, clientCtx.config.TimeoutConfig.TxNextBlocksTimeout)
+	defer cancel2()
+
+	if err = retry.Do(timeoutCtx, clientCtx.config.TimeoutConfig.TxStatusPollInterval, func() error {
+		accInfo, err := GetAccountInfo(ctx, clientCtx, clientCtx.FromAddress())
+		if err != nil {
+			return retry.Retryable(err)
+		}
+
+		if accInfo.GetSequence() <= txf.Sequence() {
+			return retry.Retryable(errors.Errorf("awaiting the right sequence number, current: %d, expected: %d", accInfo.GetSequence(), txf.Sequence()+1))
+		}
+
+		fmt.Println("================")
 
 		return nil
 	}); err != nil {
@@ -370,38 +397,61 @@ func broadcastTxAsync(ctx context.Context, clientCtx Context, txBytes []byte) (*
 }
 
 func broadcastTxSync(ctx context.Context, clientCtx Context, txBytes []byte) (*sdk.TxResponse, error) {
-	requestCtx, cancel := context.WithTimeout(ctx, clientCtx.config.TimeoutConfig.RequestTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, clientCtx.config.TimeoutConfig.TxTimeout)
 	defer cancel()
 
 	// rpc client
 	txHash := fmt.Sprintf("%X", tmtypes.Tx(txBytes).Hash())
 	if clientCtx.RPCClient() != nil {
-		res, err := clientCtx.RPCClient().BroadcastTxSync(requestCtx, txBytes)
-		if err != nil {
-			if err := processTxCommitError(requestCtx, err); err != nil {
-				return nil, err
+		var res *coretypes.ResultBroadcastTx
+		if err := retry.Do(timeoutCtx, clientCtx.config.TimeoutConfig.TxStatusPollInterval, func() error {
+			requestCtx, cancel := context.WithTimeout(ctx, clientCtx.config.TimeoutConfig.RequestTimeout)
+			defer cancel()
+
+			var err error
+			res, err = clientCtx.RPCClient().BroadcastTxSync(requestCtx, txBytes)
+			if err != nil {
+				if err := processTxCommitError(requestCtx, err); err != nil {
+					return err
+				}
+			} else if res.Code != 0 {
+				return errors.Wrapf(sdkerrors.ABCIError(res.Codespace, res.Code, res.Log),
+					"transaction '%s' failed", txHash)
 			}
-		} else if res.Code != 0 {
-			return nil, errors.Wrapf(sdkerrors.ABCIError(res.Codespace, res.Code, res.Log),
-				"transaction '%s' failed", txHash)
+
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 
 		return sdk.NewResponseFormatBroadcastTx(res), nil
 	}
 
 	// grpc client
-	txSvcClient := sdktx.NewServiceClient(clientCtx)
-	res, err := txSvcClient.BroadcastTx(requestCtx, &sdktx.BroadcastTxRequest{
-		TxBytes: txBytes,
-		Mode:    sdktx.BroadcastMode_BROADCAST_MODE_SYNC,
-	})
-	if err != nil {
-		if err := processTxCommitError(requestCtx, err); err != nil {
-			return nil, err
+
+	var res *sdktx.BroadcastTxResponse
+	if err := retry.Do(timeoutCtx, clientCtx.config.TimeoutConfig.TxStatusPollInterval, func() error {
+		requestCtx, cancel := context.WithTimeout(ctx, clientCtx.config.TimeoutConfig.RequestTimeout)
+		defer cancel()
+
+		txSvcClient := sdktx.NewServiceClient(clientCtx)
+		var err error
+		res, err = txSvcClient.BroadcastTx(requestCtx, &sdktx.BroadcastTxRequest{
+			TxBytes: txBytes,
+			Mode:    sdktx.BroadcastMode_BROADCAST_MODE_SYNC,
+		})
+		if err != nil {
+			if err := processTxCommitError(requestCtx, err); err != nil {
+				return err
+			}
+		} else if res.TxResponse.Code != 0 {
+			return errors.Wrapf(sdkerrors.ABCIError(res.TxResponse.Codespace, res.TxResponse.Code, res.TxResponse.Logs.String()),
+				"transaction '%s' failed, raw log:%s", res.TxResponse.TxHash, res.TxResponse.RawLog)
 		}
-	} else if res.TxResponse.Code != 0 {
-		return nil, errors.Wrapf(sdkerrors.ABCIError(res.TxResponse.Codespace, res.TxResponse.Code, res.TxResponse.Logs.String()),
-			"transaction '%s' failed, raw log:%s", res.TxResponse.TxHash, res.TxResponse.RawLog)
+
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return res.TxResponse, nil
@@ -409,7 +459,7 @@ func broadcastTxSync(ctx context.Context, clientCtx Context, txBytes []byte) (*s
 
 func processTxCommitError(ctx context.Context, err error) error {
 	if errors.Is(err, ctx.Err()) {
-		return errors.WithStack(err)
+		return retry.Retryable(errors.WithStack(err))
 	}
 
 	if err := convertTendermintError(err); !cosmoserrors.ErrTxInMempoolCache.Is(err) {

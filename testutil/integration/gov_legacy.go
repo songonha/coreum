@@ -234,12 +234,12 @@ func (g GovernanceLegacy) voteAll(ctx context.Context, msgFunc func(sdk.AccAddre
 		}()
 	}
 
+	txf := g.chainCtx.TxFactory().
+		WithSimulateAndExecute(true)
+
 	txHashes := make([]string, 0, len(g.stakerAccounts))
 	for _, staker := range g.stakerAccounts {
 		msg := msgFunc(staker)
-
-		txf := g.chainCtx.TxFactory().
-			WithSimulateAndExecute(true)
 
 		clientCtx := g.chainCtx.ClientContext.
 			WithBroadcastMode(flags.BroadcastSync)
@@ -253,7 +253,7 @@ func (g GovernanceLegacy) voteAll(ctx context.Context, msgFunc func(sdk.AccAddre
 
 	// await for the first error
 	for _, txHash := range txHashes {
-		_, err := client.AwaitTx(ctx, g.chainCtx.ClientContext, txHash)
+		_, err := client.AwaitTx(ctx, g.chainCtx.ClientContext, txf, txHash)
 		if err != nil {
 			return err
 		}

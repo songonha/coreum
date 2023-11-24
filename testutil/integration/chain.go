@@ -250,7 +250,7 @@ func (c ChainContext) SignAndBroadcastMultisigTx(
 		return nil, err
 	}
 
-	return client.BroadcastRawTx(ctx, c.ClientContext, encodedTx)
+	return client.BroadcastRawTx(ctx, c.ClientContext, txf, encodedTx)
 }
 
 // Chain holds network and client for the blockchain.

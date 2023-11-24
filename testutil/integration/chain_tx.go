@@ -18,7 +18,7 @@ import (
 // The main difference from the client.BroadcastTx is that this function uses the custom account addresses decoding with
 // the custom chain prefixes, which allows to execute transactions for different chains.
 func (c ChainContext) BroadcastTxWithSigner(ctx context.Context, txf client.Factory, signerAddress sdk.AccAddress, msgs ...sdk.Msg) (*sdk.TxResponse, error) {
-	clientCtx := c.ClientContext.WithFromAddress(signerAddress)
+	clientCtx := c.ClientContext.WithFromAddress(signerAddress).WithAwaitTx(true)
 
 	// add account info
 	txf, err := addAccountInfoToTxFactory(ctx, clientCtx, txf, c.MustConvertToBech32Address(signerAddress))
@@ -54,7 +54,7 @@ func (c ChainContext) BroadcastTxWithSigner(ctx context.Context, txf client.Fact
 		return nil, err
 	}
 
-	return client.BroadcastRawTx(ctx, clientCtx, txBytes)
+	return client.BroadcastRawTx(ctx, clientCtx, txf, txBytes)
 }
 
 func addAccountInfoToTxFactory(ctx context.Context, clientCtx client.Context, txf tx.Factory, address string) (client.Factory, error) {

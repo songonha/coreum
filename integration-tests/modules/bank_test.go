@@ -761,6 +761,7 @@ func TestTryBankMultiSendFromMultipleAccounts(t *testing.T) {
 	_, err = client.BroadcastRawTx(
 		ctx,
 		chain.ClientContext.WithFromAddress(sender1),
+		txF,
 		encodedMultiSendTx)
 	requireT.ErrorIs(err, banktypes.ErrMultipleSenders)
 }
